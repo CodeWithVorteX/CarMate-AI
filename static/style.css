@@ -39,12 +39,18 @@
 
 /* Compact, accessible Discover dropdown */
 .discover-dropdown{margin:12px 0 14px;flex-shrink:0}
-.discover-toggle{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none;border:1px solid var(--border,#263248);background:var(--card,#161E2E);color:var(--text,#F1F5F9);border-radius:11px;padding:11px 12px;font-size:13px;font-weight:650;transition:background .18s,border-color .18s}
+.discover-toggle{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none;border:1px solid var(--border,#263248);background:var(--panel);color:var(--text);border-radius:11px;padding:11px 12px;font-size:13px;font-weight:650;transition:background .18s,border-color .18s}
 .discover-toggle::-webkit-details-marker{display:none}
 .discover-toggle:hover{border-color:var(--accent,#06B6D4)}
 .discover-toggle:focus-visible{outline:2px solid var(--accent,#06B6D4);outline-offset:3px}
-.discover-chevron{font-size:19px;line-height:1;transition:transform .2s ease;color:var(--muted,#94A3B8)}
+.discover-chevron{font-size:19px;line-height:1;transition:transform .2s ease;color:var(--accent)}
 .discover-dropdown[open] .discover-chevron{transform:rotate(180deg)}
 .discover-options{padding:7px 0 2px;display:flex;flex-direction:column;gap:3px}
 .discover-options .prompt{width:100%;text-align:left}
 @media(prefers-reduced-motion:reduce){.discover-chevron,.discover-toggle{transition:none}}
+
+/* Discover dropdown: consistent contrast in every theme */
+.discover-toggle .discover-heading{color:var(--text);opacity:1}
+.discover-toggle .discover-chevron{color:var(--accent);opacity:1;font-weight:800}
+.discover-toggle:hover{background:var(--hover)}
+.discover-dropdown[open] .discover-toggle{border-color:var(--accent)}
