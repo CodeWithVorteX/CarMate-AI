@@ -93,6 +93,7 @@ def _load():
         'seats': _expr('v', v, ['seats']),
         'engine_cc': _expr('v', v, ['engine_cc']),
         'features': _expr('v', v, ['key_features']),
+        'drivetrain': _expr('v', v, ['drivetrain', 'drive_type', 'drive_train', 'wheel_drive', 'drive']),
     }
     # body_style_id is an encoded category, not an SUV/sedan/hatchback name.
     # Do not treat it as a text category without a lookup table.
@@ -143,6 +144,10 @@ def extract_filters(message, previous=None):
         n = float(amount.group(1).replace(',', ''))
         unit = amount.group(2) if amount.lastindex and amount.lastindex >= 2 else None
         f['budget'] = n * ({'lakh':100000,'lakhs':100000,'lac':100000,'lacs':100000,'crore':10000000,'cr':10000000,'k':1000}.get(unit,1))
+    if re.search(r'(?<!\w)(?:4\s*[x×]\s*4|4wd|awd|four[ -]wheel drive|all[ -]wheel drive)(?!\w)', s):
+        f['drivetrain'] = '4x4'
+    elif re.search(r'\b(?:2wd|fwd|rwd|front[ -]wheel drive|rear[ -]wheel drive)\b', s):
+        f.pop('drivetrain', None)
     for fuel in ('petrol','diesel','cng','electric','hybrid'):
         if re.search(r'\b'+fuel+r'\b',s): f['fuel']=fuel
     if re.search(r'\b(electric|eletric|electic|ev)\b', s): f['fuel']='electric'
@@ -152,6 +157,8 @@ def extract_filters(message, previous=None):
     for body in ('suv','sedan','hatchback','mpv'):
         if re.search(r'\b'+body+r'\b',s): f['body_type']=body
     city = re.search(r'\b(?:in|for|at|near)\s+(bhopal|indore|delhi|mumbai|pune|bangalore|bengaluru|hyderabad|chennai|kolkata|jaipur|lucknow)\b',s)
+    if not city and re.fullmatch(r'\s*(bhopal|indore|delhi|mumbai|pune|bangalore|bengaluru|hyderabad|chennai|kolkata|jaipur|lucknow)\s*[.!]?\s*', s):
+        city = re.search(r'(bhopal|indore|delhi|mumbai|pune|bangalore|bengaluru|hyderabad|chennai|kolkata|jaipur|lucknow)', s)
     if city: f['city']=city.group(1)
     if re.search(r'\b(on[ -]?road|onroad)\b',s): f['price_type']='on_road'
     elif re.search(r'\bex[ -]?showroom\b',s): f['price_type']='ex_showroom'
@@ -180,8 +187,12 @@ def search_records(records, filters, query='', limit=18, relax=False):
     for r in records:
         requested_body = filters.get('body_type')
         actual_body = str(r.get('body_type') or '').strip().lower()
-        if requested_body and actual_body and requested_body not in actual_body:
+        if requested_body and (not actual_body or requested_body not in actual_body):
             continue
+        if filters.get('drivetrain') == '4x4':
+            drive = str(r.get('drivetrain') or '').lower()
+            if not re.search(r'(?<!\w)(?:4\s*[x×]\s*4|4wd|awd|four[ -]wheel drive|all[ -]wheel drive)(?!\w)', drive):
+                continue  # Unknown drivetrain is NOT a confirmed 4x4 match.
         if filters.get('fuel') and filters['fuel'] not in str(r.get('fuel') or '').lower(): continue
         trans=filters.get('transmission')
         if trans=='automatic' and not _automatic(r.get('transmission')): continue
@@ -281,6 +292,8 @@ def _safe_response_fallback(message, filters, records):
     budget = filters.get('budget')
     long_trip = bool(re.search(r'\b(long trips?|road trips?|highway|touring)\b', message, re.I))
     family = bool(re.search(r'\b(family|children|kids)\b', message, re.I))
+    if filters.get('drivetrain') == '4x4':
+        return _four_by_four_reply(filters)
     if intent == 'discovery' and (body or fuel or family or long_trip):
         kind = ('electric ' if fuel == 'electric' else '') + ({'suv':'SUV', 'sedan':'sedan', 'hatchback':'hatchback', 'mpv':'MPV'}.get(body, 'car'))
         points = ['rear-seat comfort', 'luggage space', 'highway ride quality', 'service access']
@@ -404,27 +417,60 @@ def _verified_comparison(message, records, filters):
 # This is a conservative guard, not a complete fact checker. It blocks common
 # unsupported exact figures before they reach the user.
 def _unsupported_numeric_claim(answer, records):
-    """Reject ungrounded numerical vehicle specifications and prices."""
-    text = re.sub(r'(?m)^\s*\*?verification.*$', '', answer, flags=re.I)
-    patterns = [
+    """Flag specific unverified car figures, not ordinary budget references.
+
+    This is a conservative guard, not full fact-checking. The model is
+    instructed not to invent specifications; only a verified exact figure
+    from a supplied dataset record is allowed through.
+    """
+    # Budget figures in questions or answers are not vehicle price claims.
+    # Do not reject an otherwise useful answer just for saying '₹30 lakh budget'.
+    spec_pattern = re.compile(
         r'\b\d+(?:\.\d+)?\s*(?:km\s*/\s*l|kmpl|kpl|km\s*(?:per charge|range)|airbags?|stars?)\b',
-        r'₹\s*[\d,.]+\s*(?:lakh|lac|l|crore|cr)?',
-        r'\b\d+(?:\.\d+)?\s*(?:lakh|lac|crore)\b',
-    ]
-    if not any(re.search(pattern, text, re.I) for pattern in patterns):
+        re.I)
+    claims = spec_pattern.findall(answer)
+    if not claims:
         return False
-    # Dataset-backed numbers still need a proper model/variant provenance check.
-    # We prefer a safe rewrite to passing through fabricated market figures.
-    return True
+    verified_values = set()
+    for record in records:
+        for field in ('mileage', 'seats'):
+            value = record.get(field)
+            if value is not None:
+                verified_values.add(str(value).strip().lower())
+    # When provenance is missing, do not claim exact vehicle specs.
+    return any(not any(re.search(r'\b'+re.escape(value)+r'\b', claim, re.I)
+                       for value in verified_values if value) for claim in claims)
 
 
 def _is_broad_discovery(message, filters):
     """New-car exploration without a budget or specific models."""
-    if filters.get('budget') or _needs_comparison(message):
+    if filters.get('budget') or filters.get('drivetrain') or _needs_comparison(message):
         return False
     if re.search(r'\b(dzire|i20|altroz|brezza|nexon|creta|seltos|harrier)\b', message, re.I):
         return False
     return bool(re.search(r'\b(suv|crossover|family car|long trips?|road trips?|sedan|hatchback|mpv|electric|eletric|ev|first car|city car)\b', message, re.I))
+
+
+def _four_by_four_reply(filters):
+    """Qualitative shortlist; drivetrain, pricing and features must be variant-verified."""
+    city = filters.get('city')
+    budget = filters.get('budget')
+    location = f' in {city.title()}' if city else ''
+    budget_note = (f' Your budget is ₹{budget/100000:g} lakh; exact on-road eligibility is not verified.'
+                   if budget is not None else '')
+    lines = [f'**4×4 / AWD options to explore{location}**', '',
+             'Here are three models worth checking for a 4×4-focused search with a comfortable cabin:', '',
+             '1. **Mahindra Thar Roxx** — explore its 4×4-equipped variants for a mix of cabin features and off-road use.',
+             '2. **Mahindra Scorpio-N** — compare its 4WD-equipped variants if family space and highway use matter.',
+             '3. **Maruti Suzuki Jimny** — a smaller 4WD alternative; check whether its cabin and features meet your expectations.',
+             '',
+             '**Important:** These are general model suggestions, not verified dataset matches.' + budget_note,
+             'Confirm exact drivetrain, trim features, availability and on-road prices with dealers' + location + '.']
+    if not city:
+        lines += ['', '**Which city are you buying in?**']
+    else:
+        lines += ['', '**Will you use the 4×4 mainly off-road, or mostly for city and highway driving?**']
+    return '\n'.join(lines)
 
 
 def _safe_general_reply(message, filters):
@@ -436,6 +482,8 @@ def _safe_general_reply(message, filters):
     budget = filters.get('budget')
     long_trip = bool(re.search(r'\b(long trips?|road trips?|highway|touring|travel)\b', message, re.I))
     family = bool(re.search(r'\b(family|kids|children|five people|5 people)\b', message, re.I))
+    if filters.get('drivetrain') == '4x4':
+        return _four_by_four_reply(filters)
     if electric and body == 'suv':
         options = [('Tata Nexon EV', 'An electric SUV to investigate for family use; check the exact variant’s real-world highway range.', 'Plan charging stops and verify fast-charging compatibility.'),
                    ('MG ZS EV', 'Worth comparing for cabin space and road-trip comfort.', 'Check charging coverage along your actual routes.'),
@@ -541,6 +589,11 @@ def call_groq(history, records, filters, use_search=False):
             choice = (output.get('choices') or [{}])[0]
             answer = choice.get('message', {}).get('content', '')
             if choice.get('finish_reason') == 'length':
+                if attempt == 0:
+                    # Retry with more room and a concise-answer instruction.
+                    payload['max_completion_tokens'] = max(payload['max_completion_tokens'] * 2, 3000)
+                    payload['messages'] = [dict(messages[0], content=messages[0]['content'] + '\nKeep this reply under 250 words.')] + messages[1:]
+                    continue
                 raise RuntimeError('Groq answer was cut off at the output token limit.')
             if not answer or not answer.strip():
                 raise RuntimeError('Groq returned an empty response.')
@@ -661,7 +714,9 @@ def chat():
     context_records = ([dict(r, match_status='exact_filter_match') for r in candidates]
                        + [dict(r, match_status='named_model_partial_match') for r in partial])
     try:
-        if _is_broad_discovery(msg, filters):
+        if filters.get('drivetrain') == '4x4':
+            answer, sources = _safe_general_reply(msg, filters), []
+        elif _is_broad_discovery(msg, filters):
             answer, sources = _safe_general_reply(msg, filters), []
         else:
             answer, sources = call_groq(history, context_records, filters, False)
@@ -671,7 +726,7 @@ def chat():
         answer = _format_ai_answer(answer)
     except (RuntimeError, ValueError, urllib.error.URLError, TimeoutError) as exc:
         app.logger.warning('Groq request failed: %s', exc)
-        answer, sources = (_safe_general_reply(msg, filters) if _is_broad_discovery(msg, filters) else _safe_response_fallback(msg, filters, candidates + partial)), []
+        answer, sources = (_safe_general_reply(msg, filters) if _is_broad_discovery(msg, filters) else _safe_response_fallback(msg, filters, candidates)), []
     # Store only real user/assistant turns. Reset is handled by /api/reset.
     # Conversation persistence is handled client-side, per chat ID.
     return jsonify({'reply':answer, 'sources':sources, 'filters':filters, 'matches':len(candidates),
