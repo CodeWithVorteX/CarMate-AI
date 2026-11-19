@@ -38,9 +38,40 @@ const row=document.createElement('div');row.className='chat-entry'+(c.id===activ
 const menu=document.createElement('button');menu.className='chat-more';menu.textContent='⋯';menu.title='Chat options';menu.setAttribute('aria-label','Options for '+c.title);menu.addEventListener('click',()=>{const options=row.querySelector('.chat-actions');options.hidden=!options.hidden});row.appendChild(menu);
 const actions=document.createElement('div');actions.className='chat-actions';actions.hidden=true;const rename=document.createElement('button');rename.textContent='Rename';rename.addEventListener('click',()=>{const name=prompt('Rename conversation',c.title);if(name!==null&&name.trim()){c.title=name.trim().slice(0,80);c.updated=Date.now();persist();renderList()}});const del=document.createElement('button');del.textContent='Delete';del.className='delete-chat';del.addEventListener('click',()=>{if(!confirm('Delete this conversation permanently from this browser?'))return;chats=chats.filter(x=>x.id!==c.id);if(activeId===c.id)activeId=chats[0]?.id||null;if(!activeId)createChat();else{persist();render()} });actions.append(rename,del);row.appendChild(actions);chatList.appendChild(row)}
 counter.textContent=chats.length?String(chats.length):'';if(!visible){const empty=document.createElement('div');empty.className='history-empty';empty.textContent=q?'No matching chats':'No saved chats';chatList.appendChild(empty)}}
-function render(){messages.replaceChildren();const c=current();if(!c||!c.messages.length)bubble(WELCOME);else for(const m of c.messages)bubble(m.text,m.role,m.sources||[]);renderList()}
+function render(){messages.replaceChildren();const c=current();document.querySelector('.app').classList.toggle('chat-empty',!c||!c.messages.length);if(c&&c.messages.length)for(const m of c.messages)bubble(m.text,m.role,m.sources||[]);renderList()}
 function switchChat(id){if(busy)return;activeId=id;persist();render()}
-function appendMessage(role,text,sources=[]){const c=current();if(!c)return;c.messages.push({role,text,sources});c.updated=Date.now();if(role==='user'&&c.title==='New chat')c.title=text.replace(/\s+/g,' ').slice(0,54)+(text.length>54?'…':'');persist();bubble(text,role,sources);renderList()}
+function appendMessage(role,text,sources=[]){const c=current();if(!c)return;c.messages.push({role,text,sources});c.updated=Date.now();if(role==='user'&&c.title==='New chat')c.title=text.replace(/\s+/g,' ').slice(0,54)+(text.length>54?'…':'');persist();document.querySelector('.app').classList.remove('chat-empty');bubble(text,role,sources);renderList()}
 async function ask(message){message=(message||input.value).trim();if(!message||busy)return;let c=current();if(!c)c=createChat();const history=c.messages.slice(-12).map(m=>({role:m.role==='user'?'user':'model',text:m.text}));input.value='';appendMessage('user',message);busy=true;send.disabled=true;document.querySelector('#reset').disabled=true;const pending=bubble('Checking your preferences and car data…');try{const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history,live_search:false})});const data=await response.json();pending.remove();if(!response.ok)appendMessage('bot',data.error||'Something went wrong.');else appendMessage('bot',data.reply,data.sources||[])}catch(e){pending.remove();appendMessage('bot','Could not connect to the server. Check that Flask is running.')}finally{busy=false;send.disabled=false;document.querySelector('#reset').disabled=false;input.focus()}}
 send.addEventListener('click',()=>ask());input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.prompt').forEach(b=>b.addEventListener('click',()=>ask(b.dataset.prompt)));document.querySelector('#reset').addEventListener('click',()=>{if(!busy){createChat();input.focus()}});search.addEventListener('input',renderList);
 load();if(!current())createChat();else render();
+
+
+/* Sidebar state: desktop remembers preference; mobile starts closed. */
+(function(){
+  const app=document.querySelector('.app');
+  const toggle=document.querySelector('#sidebar-toggle');
+  const close=document.querySelector('#sidebar-close');
+  const backdrop=document.querySelector('#sidebar-backdrop');
+  const sidebar=document.querySelector('#app-sidebar');
+  const mobile=window.matchMedia('(max-width:750px)');
+  const key='carmate-sidebar-open-desktop';
+  function savedDesktop(){try{return localStorage.getItem(key)!=='false'}catch(e){return true}}
+  function setOpen(open,remember=true){
+    app.classList.toggle('sidebar-collapsed',!open);
+    toggle.setAttribute('aria-expanded',String(open));
+    toggle.setAttribute('aria-label',open?'Close sidebar':'Open sidebar');
+    sidebar.setAttribute('aria-hidden',String(!open));
+    close.setAttribute('aria-expanded',String(open));
+    if(mobile.matches){document.body.style.overflow=open?'hidden':''}
+    else{document.body.style.overflow='';if(remember){try{localStorage.setItem(key,String(open))}catch(e){}}}
+  }
+  function sync(){setOpen(mobile.matches?false:savedDesktop(),false)}
+  sync();
+  if(mobile.addEventListener)mobile.addEventListener('change',sync);else mobile.addListener(sync);
+  toggle.addEventListener('click',()=>setOpen(app.classList.contains('sidebar-collapsed')));
+  close.addEventListener('click',()=>setOpen(false));
+  backdrop.addEventListener('click',()=>setOpen(false));
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!app.classList.contains('sidebar-collapsed'))setOpen(false)});
+  document.querySelector('#topbar-new-chat').addEventListener('click',()=>{document.querySelector('#reset').click();if(mobile.matches)setOpen(false)});
+  sidebar.addEventListener('click',e=>{if(mobile.matches&&(e.target.closest('.chat-open')||e.target.closest('.prompt')||e.target.closest('#reset')))setOpen(false)});
+})();
